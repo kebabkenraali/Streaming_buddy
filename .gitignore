@@ -1,0 +1,14 @@
+/target
+# Runtime data (DB, encrypted secrets, backups) - NEVER commit
+/data/*
+!/data/.gitkeep
+*.db
+*.db-*
+/.env
+master.key
+**/master.key
+.DS_Store
+Thumbs.db
+# Keep example seed data (no personal data)
+!seed/
+!seed/**

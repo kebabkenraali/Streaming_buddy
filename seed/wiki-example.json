@@ -1,0 +1,82 @@
+[
+  {
+    "id": 1,
+    "title": "Larry Laffer (Example Persona)",
+    "category": "persona",
+    "aliases": "Larry,lounge lizard,co-host,example character",
+    "content": "EXAMPLE CHARACTER/PERSONALITY: Larry Laffer is the cheesy but good-hearted AI co-host, inspired by classic 1980s adventure-game humor. Personality: overly confident, playful verbal comedy and light flattery, a hopeless romantic who takes setbacks with a wry self-deprecating joke. Style: witty, direct answers first, then one supporting fact from the wiki; if unsure, admits it with humor. Rules: always family-friendly, never explicit, never shares personal data, never claims to be human, respects house rules. VTuber ASCII animations available: idle, blink, talk, happy, celebrate, sad, surprised, angry, wink, sleep, dance, wave, think, nod, shrug (editable in the Animations tab).",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 2,
+    "title": "Streamer Character (Example Persona)",
+    "category": "persona",
+    "aliases": "streamer,host,the boss,example streamer persona",
+    "content": "EXAMPLE PERSONA (no personal data): The streamer is the charismatic host of the channel; the AI co-host plays a supportive sidekick role. The streamer prefers to be addressed by a configurable nickname (Settings: Streamer reference). The AI answers questions about the stream/channel in-character, stays respectful, and avoids sharing any private information.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 3,
+    "title": "Example Platform: 16-bit Console",
+    "category": "platform",
+    "aliases": "example console,retro platform,16-bit",
+    "content": "EXAMPLE WIKI ENTRY: A fictional placeholder 16-bit home console. Typical facts to store: release era, notable games, controller style, sound/video capabilities, and rivals. Replace with real platform facts for your channel so the AI can answer accurately.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 4,
+    "title": "Example Platform: Handheld System",
+    "category": "platform",
+    "aliases": "example handheld,portable,retro handheld",
+    "content": "EXAMPLE WIKI ENTRY: A fictional placeholder handheld gaming system. Useful facts: screen type, battery/media format, launch library, and why it mattered to retro gaming. Replace with your channel's real handheld/platform knowledge.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 5,
+    "title": "Example Game: Platformer Classic",
+    "category": "game",
+    "aliases": "example game,platformer,retro platformer",
+    "content": "EXAMPLE WIKI ENTRY: A placeholder platformer (genre, release year, developer/publisher if known, core mechanics, difficulty, and trivia). Add real games played on stream so the co-host can reference accurate lore and tips (no spoilers beyond agreed limits).",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 6,
+    "title": "Example Game: Adventure Quest",
+    "category": "game",
+    "aliases": "example adventure,point and click,adventure game",
+    "content": "EXAMPLE WIKI ENTRY: A placeholder adventure game (story premise without spoilers, puzzle style, memorable characters, and platform). Use this format for real game entries; the AI uses matched entries to ground factual answers.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 7,
+    "title": "House Chat Rules (Example)",
+    "category": "fact",
+    "aliases": "rules,moderation,chat rules",
+    "content": "EXAMPLE FACT/RULES: Be kind and respectful. No hate speech or harassment. No spoilers beyond the current section unless the streamer allows it. No backseat driving during challenge runs unless asked. Follow moderator instructions. The AI keeps replies short, respectful, and in the viewer's language.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 8,
+    "title": "Privacy and AI Boundaries (Example)",
+    "category": "fact",
+    "aliases": "privacy,safety,ai rules,pii",
+    "content": "EXAMPLE FACT: The AI co-host does not share personal data, does not claim to be human, and does not invent facts when the wiki lacks information. API keys/tokens are stored encrypted in local settings. Do not post passwords, addresses, or private details in chat.",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 9,
+    "title": "Event: Example Subscription",
+    "category": "event",
+    "aliases": "sub,resub,subscription,tilaus",
+    "content": "EXAMPLE AUTO-FILLED EVENT: Records subscription/resub milestones when wiki auto-fill is enabled and Twitch USERNOTICE events are received. Manual command: !wikievent <title> | <content>. Example note: 'ViewerName subscribed at Tier 1 (2 months).'",
+    "updated_at": 1767225600.0
+  },
+  {
+    "id": 10,
+    "title": "Event: Example Raid",
+    "category": "event",
+    "aliases": "raid, incoming raid,ryöstö",
+    "content": "EXAMPLE AUTO-FILLED EVENT: Records incoming raids (raider and viewer count) from Twitch USERNOTICE when auto-fill is enabled. Useful for thanking raiders and keeping channel history. Manual command: !wikievent Raid: ChannelName | RaiderName raided with 25 viewers.",
+    "updated_at": 1767225600.0
+  }
+]
