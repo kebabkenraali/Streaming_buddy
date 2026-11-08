@@ -1,49 +1,57 @@
 # Streaming Buddy (Rust)
 
-A local livestream chat assistant: reads chat, keeps a channel-specific **wiki** (games, platforms, persona, facts, events), enriches prompts with matched wiki entries, and replies via an external LLM (OpenRouter). Includes Twitch IRC integration, **encrypted settings secrets**, **wiki backups**, **auto-filling the wiki from important chat events** (subscriptions/raids/gifts), and a **separate VTuber overlay window** for OBS Studio capture.
+**Local VTuber streaming chat helper and buddy for streamers — local wiki knowledge base + OpenRouter.ai AI chat (proof of concept).**
 
-> **GitHub/example version:** no personal data is included. Example wiki/personality/animation/event data is provided in [`seed/`](seed/). Runtime data (`data/`, DB, `master.key`, real backups) is gitignored.
+Streaming Buddy is a local co-host app for livestreams: it keeps a channel-specific **wiki**, enriches AI prompts with matched wiki entries, replies via **OpenRouter.ai**, integrates with **Twitch chat/events**, and provides a **separate VTuber overlay window** for **OBS Studio** capture. Settings secrets are encrypted at rest.
 
-## Features
+> **No personal data included in this repository.** Example wiki/personality/animation/event data lives in [`seed/`](seed/). Runtime data (`data/` DB, `master.key`, backups, chat logs) is gitignored.
 
-- **Rust + Axum** web server with a local GUI (`http://127.0.0.1:8811`).
-- **Encrypted settings at rest:** API keys and tokens (`openrouter_api_key`, `twitch_token`, etc.) are stored as `enc:v1:...` using **AES-256-GCM**. The key is derived (Argon2id) from `STREAMING_BUDDY_MASTER_KEY` (env var) or a generated `data/master.key`. Non-secret settings remain plaintext. Secrets are masked in API/GUI responses.
-- **Wiki knowledge base** (categories: `game`, `platform`, `persona`, `fact`, `event`) with keyword search/matching used to ground AI answers.
-- **Wiki backup/restore:** create timestamped JSON backups in `data/backups/`, list, restore (merge) or replace-all. CLI: `backup`, `backup-list`, `restore <file> [--replace]`.
-- **Wiki auto-fill from chat/events:**
-  - Twitch `USERNOTICE` parsing for **sub, resub, gift subs, raids, announcements** → recorded as `event` wiki entries (when `wiki_auto_events=1`).
-  - Manual chat/command helpers: `!wikievent <title> | <content>` and `!addfact <text>`.
-  - Conservative text extraction fallback for obvious subscription phrases.
-- **Twitch IRC** (TLS, tags/commands) read + optional AI replies with reply modes and cooldown.
-- **OpenRouter** chat completions; wiki-enriched system prompt with persona/character instructions.
-- **VTuber in a separate window (OBS capture):** `/vtuber` opens as its own popup window so OBS can capture it independently. Press `G` on the VTuber page to toggle a green background for chroma workflows.
+## Key features
 
-## Quick start (build & run)
+- **Local web GUI** (Axum): `http://127.0.0.1:8811` (configurable host/port).
+- **OpenRouter.ai AI chat**: wiki-grounded prompt building (persona/character instructions, streamer reference, recent context, matched wiki hits).
+- **Local wiki knowledge base**: categories `game`, `platform`, `persona`, `fact`, `event` (CRUD + search). Used to ground factual answers.
+- **Encrypted settings at rest**: `openrouter_api_key`, `twitch_token`, etc. stored as `enc:v1:<...>` using **AES-256-GCM**; key derived via **Argon2id** from `STREAMING_BUDDY_MASTER_KEY` or generated `data/master.key`. Secrets are **masked** in API/GUI responses.
+- **Wiki backup & restore**: timestamped JSON backups in `data/backups/` (create/list/restore merge or replace). CLI: `backup`, `backup-list`, `restore <file> [--replace]`.
+- **Wiki auto-fill from important chat events**:
+  - Twitch IRC (TLS) + `USERNOTICE` parsing for **subscription, resub, gift subs, raid, announcement** → recorded as `event` wiki entries when `wiki_auto_events=1`.
+  - Manual commands: `!wikievent <title> | <content>` and `!addfact <text>`.
+- **Twitch integration**: connect/start/stop/status, reply modes/cooldown (configurable). Start without credentials returns a clear error.
+- **VTuber in a separate window (OBS capture)**: `/vtuber` opens as its own popup window (independent capture). Press **`G`** to toggle green background for chroma.
+- **ASCII animations (VTuber)**: 15 default animations — `idle, blink, talk, happy, celebrate, sad, surprised, angry, wink, sleep, dance, wave, think, nod, shrug` (+ aliases like `smile/joy`, `speak`, `hello/hi/bye`, `shock/wow`, `flirt`, etc.). Animations are stored in the local DB and served to `/vtuber`.
+- **Create/edit animations in the app**: GUI **Animations** tab + API to list/get/create/update/delete animations and control VTuber play state. Frame format supports multiple frames separated by a line containing `---FRAME---`.
 
-Requirements: Rust toolchain (stable). The project uses `edition = "2021"`.
+## Download / run (Windows EXE)
+
+A prebuilt Windows x64 package (when included in `dist/`) contains `streaming_buddy_rs.exe` and `start-server.bat`.
+
+1. Extract the zip.
+2. (Recommended) set a master key for encrypted secrets:
+   ```powershell
+   setx STREAMING_BUDDY_MASTER_KEY "<long-random-secret>"
+   ```
+   Or run with `$env:STREAMING_BUDDY_MASTER_KEY="..."` in the current shell. If unset, the app generates `data/master.key` — **back it up securely** (losing it makes encrypted secrets unrecoverable).
+3. Run `start-server.bat` (or `streaming_buddy_rs.exe server --host 127.0.0.1 --port 8811`).
+4. Open `http://127.0.0.1:8811`.
+
+## Build from source
+
+Requirements: Rust stable toolchain.
 
 ```powershell
-cd "C:\AI_Projektit\Streaming buddy-rs"
-
-# optional but recommended: set a strong master key (keeps encrypted secrets recoverable)
-$env:STREAMING_BUDDY_MASTER_KEY = "<long-random-secret>"
-
-# build
+git clone https://github.com/kebabkenraali/Streaming_buddy.git
+cd Streaming_buddy
 cargo build --release
-
-# run server
-./target/release/streaming_buddy_rs server --host 127.0.0.1 --port 8811
+./target/release/streaming_buddy_rs.exe server --host 127.0.0.1 --port 8811
 ```
 
-Open `http://127.0.0.1:8811`. In **Settings**: set OpenRouter API key/model/persona, Twitch credentials (optional), then save. Secrets are encrypted in the SQLite database (`data/streaming_buddy.db`).
-
-## OBS Studio capture (VTuber)
+## OBS Studio (VTuber capture)
 
 1. Start the server and open the GUI.
-2. Click **Open VTuber window (OBS capture)** — opens `http://127.0.0.1:8811/vtuber` as a separate popup window (required for independent capture).
-3. In OBS Studio, add a **Window Capture** source and select the VTuber popup window. (Alternative: **Browser Source** pointing to `http://127.0.0.1:8811/vtuber`.)
-4. Optional: focus the VTuber window and press **`G`** to toggle a green background for chroma keying.
-5. The overlay shows simple ASCII/avatar states (idle/talk/celebrate/sleep) driven by recent AI activity as an MVP; see gaps below for full sprite/WebSocket parity.
+2. Click **Open VTuber window (OBS capture)** — opens `/vtuber` as a **separate popup window**.
+3. In OBS: add **Window Capture** for that popup (or **Browser Source** → `http://127.0.0.1:8811/vtuber`).
+4. Optional: press **`G`** on the VTuber window for green/chroma background.
+5. Animations are loaded from `/api/animations`; AI replies trigger `talk` (state via `/api/vtuber/state`). Use the Animations tab to edit/create and **Play**.
 
 ## CLI
 
@@ -56,52 +64,40 @@ streaming-buddy-rs event <kind> <user> <detail>
 streaming-buddy-rs ask "<text>"
 ```
 
-## Example data (safe for GitHub)
+## API (selected)
 
-- [`seed/wiki-example.json`](seed/wiki-example.json) — example wiki entries including **persona/personality**, rules, and an **event** example. No personal data.
-- VTuber/character animations (documented set): `idle, blink, talk, happy, celebrate, sad, surprised, angry, wink, sleep, dance, wave, think, nod, shrug`. The Rust MVP `/vtuber` overlay demonstrates a subset (idle/talk/celebrate/sleep) as an OBS-capturable separate window.
+- `GET/POST /api/chat`, `GET /api/messages`
+- `GET/POST /api/wiki`, `GET/PUT/DELETE /api/wiki/:id`, `GET /api/wiki/search?q=...`
+- `GET/POST /api/animations`, `GET/PUT/DELETE /api/animations/:name`
+- `GET /api/vtuber/state`, `POST /api/vtuber/play`
+- `GET/POST /api/settings` (secrets masked)
+- `POST /api/backup/create`, `GET /api/backup/list`, `POST /api/backup/restore`
+- `POST /api/twitch/start|stop`, `GET /api/twitch/status`
 
-## MVP gaps vs Python version
+## Example data (safe)
 
-The Python `Streaming buddy` app includes additional UI/behavior that this Rust port does **not yet** fully implement:
+[`seed/wiki-example.json`](seed/wiki-example.json) contains **two example entries per category** (`persona`, `platform`, `game`, `fact`, `event`) — fictional/no personal data. Use as import/reference examples.
 
-- **Full PNG sprite upload/playback parity:** Python has sprite DB/API (`/api/sprites/*`), image uploads, per-animation frames/FPS/cycling, `/media` static serving, and Larry PIL sprite seeding. Rust MVP uses an embedded VTuber overlay page (ASCII/simple states), not the full sprite upload/playback pipeline.
-- **WebSocket animation push:** Python/Rust MVP rely on simple polling/heuristics for state; no dedicated WebSocket channel for low-latency animation state changes.
-- Some Python GUI controls and flows (advanced sprite management, all VTuber tab behaviors) are simplified in the embedded Rust GUI.
+## Security & privacy
 
-Core requirements covered in Rust: encrypted secrets at rest, wiki backup/create/list/restore, wiki auto-fill from Twitch USERNOTICE events (subs/raids/gifts) + `!wikievent`/`!addfact`, and VTuber in a **separate window** for OBS capture.
+- **Never commit** `data/`, `master.key`, `.env`, real DBs/backups, or personal chat logs. `.gitignore` enforces this.
+- Bind to `127.0.0.1` by default. **No authentication** is included — do not expose publicly without auth/CSRF/TLS.
+- Chat/wiki are untrusted input (prompt-injection risk); review auto-filled events and harden before production use.
 
-## Security notes
-
-- **Never commit** `data/`, `master.key`, `.env`, or real databases/backups. `.gitignore` enforces this (`/data/*` ignored, `seed/` kept).
-- Set a strong master key: `STREAMING_BUDDY_MASTER_KEY`. If unset, a random key is generated in `data/master.key` — **back it up securely**; losing it makes encrypted secrets unrecoverable.
-- The app binds to `127.0.0.1` by default (local only). **No authentication** is included — do not expose publicly without adding auth/CSRF protections/TLS.
-
-See [`SECURITY.md`](SECURITY.md) for details.
-
-## No personal data checklist (before publishing)
-
-- [ ] `data/` is not committed (contains `streaming_buddy.db`, `master.key`, `backups/` with real chat/wiki). Verify with `git status`.
-- [ ] No real API keys/tokens in code, docs, or commits (OpenRouter, Twitch OAuth). Search history if needed.
-- [ ] No personal usernames, channel names, chat logs, or private streamer facts in tracked files.
-- [ ] `seed/wiki-example.json` contains only example/fictional placeholder data.
-- [ ] `.env` files and local config overrides are not committed.
-- [ ] Run `cargo check`/build artifacts (`target/`) are ignored.
+See [`SECURITY.md`](SECURITY.md) and [`RESEARCH.md`](RESEARCH.md).
 
 ## Project layout
 
-- `src/crypto.rs` — AES-256-GCM encryption for secrets (`enc:v1:`).
-- `src/db.rs` — SQLite (messages, wiki, settings), backups, event upsert.
-- `src/context.rs` — keyword search + prompt building.
-- `src/ai.rs` — OpenRouter client.
-- `src/twitch.rs` — Twitch IRC (TLS) + USERNOTICE event parsing.
-- `src/wiki_events.rs` — auto wiki fill from events/commands.
-- `src/web.rs` — Axum API + embedded GUI + `/vtuber` overlay.
-- `seed/wiki-example.json` — example data (no personal data).
-
-## Further ideas
-
-See [`RESEARCH.md`](RESEARCH.md) for researched additions (semantic wiki search, EventSub, sprite/WebSocket VTuber parity, PII redaction, hardening, tests).
+- `src/crypto.rs` — secret encryption (`enc:v1:`)
+- `src/db.rs` — SQLite (messages/wiki/settings/animations), backups
+- `src/context.rs` — wiki search + prompt building
+- `src/ai.rs` — OpenRouter client
+- `src/twitch.rs` — Twitch IRC + USERNOTICE parsing
+- `src/wiki_events.rs` — event/command → wiki auto-fill
+- `src/web.rs` — Axum API + embedded GUI + `/vtuber` + animation endpoints
+- `src/main.rs` — CLI/server
+- `seed/` — example data (no personal data)
+- `dist/` — optional prebuilt Windows EXE zip
 
 ## License
 
