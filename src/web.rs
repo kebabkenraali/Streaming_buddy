@@ -2,12 +2,13 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::{context, twitch, wiki_events};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
+use tower_http::services::ServeDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -86,6 +87,7 @@ fn now_ms() -> i64 {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let media_dir = state.cfg.images_dir.clone();
     Router::new()
         .route("/", get(index))
         .route("/vtuber", get(vtuber_page))
@@ -96,6 +98,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/wiki/:id", get(get_wiki_one).put(update_wiki).delete(delete_wiki))
         .route("/api/animations", get(list_animations).post(upsert_animation))
         .route("/api/animations/:name", get(get_animation).put(put_animation).delete(delete_animation))
+        .route("/api/animations/:name/upload", post(upload_animation_images))
         .route("/api/vtuber/state", get(vtuber_state))
         .route("/api/vtuber/play", post(vtuber_play))
         .route("/api/settings", get(get_settings).post(post_settings))
@@ -106,6 +109,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/twitch/stop", post(twitch_stop))
         .route("/api/twitch/status", get(twitch_status))
         .route("/api/server/status", get(server_status))
+        .nest_service("/media", ServeDir::new(media_dir))
         .with_state(state)
 }
 
@@ -318,6 +322,7 @@ async fn server_status(State(st): State<Arc<AppState>>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct AnimIn {
     name: String,
+    kind: Option<String>,
     frames: Option<Vec<String>>,
     frames_text: Option<String>,
     fps: Option<i64>,
@@ -370,7 +375,8 @@ async fn get_animation(
 
 async fn upsert_animation(State(st): State<Arc<AppState>>, Json(p): Json<AnimIn>) -> impl IntoResponse {
     let frames = parse_frames(&p);
-    match st.db.anim_upsert(&p.name, &frames, p.fps.unwrap_or(3), p.aliases.as_deref().unwrap_or("")) {
+    let kind = p.kind.as_deref().unwrap_or("ascii");
+    match st.db.anim_upsert(&p.name, kind, &frames, p.fps.unwrap_or(3), p.aliases.as_deref().unwrap_or("")) {
         Ok(_) => match st.db.anim_get(&p.name) {
             Ok(a) => (StatusCode::OK, Json(json!({"ok": true, "animation": a}))).into_response(),
             Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -422,6 +428,70 @@ async fn vtuber_play(State(st): State<Arc<AppState>>, Json(p): Json<PlayIn>) -> 
     (StatusCode::OK, Json(json!({"ok": true, "anim": resolved, "until_ms": v.until_ms})))
 }
 
+fn safe_name(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    if out.is_empty() { out = "anim".into(); }
+    out.trim_matches('_').to_string()
+}
+
+async fn upload_animation_images(
+    State(st): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let anim_name = safe_name(&name);
+    if anim_name.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "Invalid animation name.").into_response();
+    }
+    let dir = st.cfg.images_dir.join("animations").join(&anim_name);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let mut frames: Vec<String> = Vec::new();
+    let mut idx: usize = 0;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let fname = field.file_name().unwrap_or("frame.png").to_string();
+        let ext = std::path::Path::new(&fname)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let ext = match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => ext,
+            _ => "png".to_string(),
+        };
+        let data = match field.bytes().await {
+            Ok(b) => b,
+            Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        };
+        if data.is_empty() { continue; }
+        idx += 1;
+        let file_name = format!("frame_{:03}.{}", idx, ext);
+        let path = dir.join(&file_name);
+        if let Err(e) = std::fs::write(&path, &data) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+        frames.push(format!("/media/animations/{}/{}", anim_name, file_name));
+    }
+    if frames.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "No image files uploaded (field name: files or frames).").into_response();
+    }
+    // merge with existing? default: replace frames and set kind=image
+    let existing = st.db.anim_get(&anim_name).ok().flatten();
+    let fps = existing.as_ref().map(|a| a.fps).unwrap_or(6);
+    let aliases = existing.as_ref().map(|a| a.aliases.clone()).unwrap_or_default();
+    match st.db.anim_upsert(&anim_name, "image", &frames, fps, &aliases) {
+        Ok(_) => match st.db.anim_get(&anim_name) {
+            Ok(a) => (StatusCode::OK, Json(json!({"ok": true, "animation": a, "uploaded": frames.len()}))).into_response(),
+            Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 // -------------------- Embedded GUI templates ---------------------------------
 
 const VTUBER_HTML: &str = r########"<!doctype html>
@@ -430,13 +500,14 @@ const VTUBER_HTML: &str = r########"<!doctype html>
   html,body{margin:0;height:100%;background:transparent;overflow:hidden;font-family:Segoe UI,system-ui,sans-serif}
   body.chroma{background:#00ff00}
   #wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:8px}
-  #avatar{min-width:360px;min-height:360px;display:flex;align-items:center;justify-content:center}
+  #avatar{min-width:360px;min-height:360px;display:flex;align-items:center;justify-content:center;position:relative}
   pre{margin:0;font:14px/1.15 Consolas,'Courier New',monospace;color:#e8eef7;text-shadow:0 1px 2px #000a;white-space:pre}
+  #artimg{display:none;max-width:420px;max-height:420px;image-rendering:auto}
   #label{color:#fff;background:#0008;padding:4px 10px;border-radius:999px;font-size:13px}
   .hint{position:fixed;bottom:8px;left:8px;color:#fffc;background:#0006;padding:4px 8px;border-radius:6px;font-size:11px}
 </style></head><body>
-<div id="wrap"><div id="avatar"><pre id="art"></pre></div><div id="label">Larry - idle</div></div>
-<div class="hint">OBS: capture this window. Press G for green background. Animations load from /api/animations.</div>
+<div id="wrap"><div id="avatar"><pre id="art"></pre><img id="artimg" alt="vtuber"></div><div id="label">Larry - idle</div></div>
+<div class="hint">OBS: capture this window. Press G for green background. ASCII + image animations.</div>
 <script>
 let anims={};
 let anim='idle',i=0,fps=3,lastState='';
@@ -452,8 +523,19 @@ async function pollState(){
 }
 function tick(){
   const a=anims[anim]||anims['idle'];
-  if(a && a.frames && a.frames.length){ document.getElementById('art').textContent=a.frames[i % a.frames.length]; fps=a.fps||3; }
-  else { document.getElementById('art').textContent='(loading animations...)'; }
+  const pre=document.getElementById('art');
+  const img=document.getElementById('artimg');
+  if(a && a.frames && a.frames.length){
+    const fr=a.frames[i % a.frames.length];
+    fps=a.fps||3;
+    if((a.kind||'ascii')==='image'){
+      pre.style.display='none'; img.style.display='block'; img.src=fr;
+    } else {
+      img.style.display='none'; pre.style.display='block'; pre.textContent=fr;
+    }
+  } else {
+    img.style.display='none'; pre.style.display='block'; pre.textContent='(loading animations...)';
+  }
   i++;
   document.getElementById('label').textContent='Larry - '+anim;
   setTimeout(tick, Math.max(80, Math.floor(1000/Math.max(1,fps))));
@@ -513,19 +595,21 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:6px 8px;b
 <button class="primary" id="wsave">Add</button><button class="mini" type="button" id="wcancel" style="display:none">Cancel</button></form>
 <div class="err" id="werr"></div></div></section>
 
-<section id="tab-anim"><div class="panel"><h3>VTuber ASCII animations</h3>
-<p class="hint">Create and edit animations used by the VTuber window (<code>/vtuber</code>, separate OBS-capturable window). Frames are ASCII art; separate multiple frames with a line containing only <code>---FRAME---</code>.</p>
+<section id="tab-anim"><div class="panel"><h3>VTuber animations (ASCII + image)</h3>
+<p class="hint">Create/edit animations for the VTuber window (<code>/vtuber</code>, separate OBS-capturable). <b>ASCII</b>: frames separated by a line containing <code>---FRAME---</code>. <b>Image</b>: upload image files (PNG/JPG/GIF/WEBP) as frames, or enter image URLs/paths (one per line) in Frames.</p>
 <div class="row"><button class="mini" id="arefresh">Refresh</button><button class="mini" id="anew">New animation</button><button class="primary" id="openvt2">Open VTuber window</button></div>
-<table style="margin-top:10px"><thead><tr><th>Name</th><th>FPS</th><th>Aliases</th><th>Frames</th><th></th></tr></thead><tbody id="atb"></tbody></table>
+<table style="margin-top:10px"><thead><tr><th>Name</th><th>Kind</th><th>FPS</th><th>Aliases</th><th>Frames</th><th></th></tr></thead><tbody id="atb"></tbody></table>
 <div class="err" id="alistErr"></div></div>
 <div class="panel"><h3 id="atitle">Create / edit animation</h3>
 <div class="grid2">
-<div class="field"><label>Name (id)</label><input id="aname" placeholder="idle, talk, happy..."></div>
+<div class="field"><label>Name (id)</label><input id="aname" placeholder="idle, talk, happy, my-image-anim"></div>
+<div class="field"><label>Kind</label><select id="akind"><option value="ascii">ascii</option><option value="image">image</option></select></div>
 <div class="field"><label>FPS</label><input id="afps" type="number" min="1" max="30" value="3"></div>
-</div>
 <div class="field"><label>Aliases (comma-separated)</label><input id="aalias" placeholder="smile,joy"></div>
-<div class="field"><label>Frames (separate with a line: ---FRAME---)</label><textarea id="aframes" rows="12" style="font-family:Consolas,monospace;font-size:12px;line-height:1.15"></textarea></div>
-<div class="row"><button class="primary" id="asave">Save animation</button><button class="mini" id="aplay">Play in VTuber</button></div>
+</div>
+<div class="field"><label>Frames (ASCII: separate with ---FRAME---; Image: URLs/paths one per line)</label><textarea id="aframes" rows="10" style="font-family:Consolas,monospace;font-size:12px;line-height:1.15"></textarea></div>
+<div class="field"><label>Image upload (for kind=image; uploads replace frames)</label><input id="afiles" type="file" accept="image/*" multiple></div>
+<div class="row"><button class="primary" id="asave">Save animation</button><button class="mini" id="aupload">Upload images</button><button class="mini" id="aplay">Play in VTuber</button></div>
 <div class="ok" id="aok"></div><div class="err" id="aerr"></div>
 </div></section>
 
@@ -586,12 +670,15 @@ $('ssave').onclick=async()=>{$('sok').textContent='';$('serr').textContent='';tr
 $('tstart').onclick=async()=>{try{await post('/api/twitch/start',{});$('sok').textContent='Twitch connecting...';}catch(e){$('serr').textContent=e.message;}};
 $('tstop').onclick=async()=>{try{await post('/api/twitch/stop',{});$('sok').textContent='Twitch stopped.';}catch(e){$('serr').textContent=e.message;}};
 $('openvt2') && ($('openvt2').onclick=$('openvt').onclick);
-async function loadAnims(){try{const d=await api('/api/animations');const tb=$('atb');tb.innerHTML='';(d.animations||[]).forEach(a=>{const tr=document.createElement('tr');const fr=(a.frames||[]).length;tr.innerHTML='<td>'+esc(a.name)+'</td><td>'+a.fps+'</td><td>'+esc(a.aliases||'')+'</td><td>'+fr+'</td><td><button class="mini" data-ae="'+esc(a.name)+'">Edit</button> <button class="mini" data-ap="'+esc(a.name)+'">Play</button> <button class="danger" data-ad="'+esc(a.name)+'">Del</button></td>';tb.appendChild(tr);});tb.querySelectorAll('[data-ae]').forEach(b=>b.onclick=()=>editAnim(b.dataset.ae));tb.querySelectorAll('[data-ap]').forEach(b=>b.onclick=()=>playAnim(b.dataset.ap));tb.querySelectorAll('[data-ad]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete animation '+b.dataset.ad+'?'))return;await api('/api/animations/'+encodeURIComponent(b.dataset.ad),{method:'DELETE'});loadAnims();});}catch(e){$('alistErr').textContent=e.message;}}
-async function editAnim(name){try{const d=await api('/api/animations/'+encodeURIComponent(name));const a=d.animation;if(!a)return;$('atitle').textContent='Edit: '+a.name;$('aname').value=a.name;$('afps').value=a.fps||3;$('aalias').value=a.aliases||'';$('aframes').value=(a.frames||[]).join('\n---FRAME---\n');$('aok').textContent='';$('aerr').textContent='';}catch(e){$('aerr').textContent=e.message;}}
+async function loadAnims(){try{const d=await api('/api/animations');const tb=$('atb');tb.innerHTML='';(d.animations||[]).forEach(a=>{const tr=document.createElement('tr');const fr=(a.frames||[]).length;tr.innerHTML='<td>'+esc(a.name)+'</td><td>'+esc(a.kind||'ascii')+'</td><td>'+a.fps+'</td><td>'+esc(a.aliases||'')+'</td><td>'+fr+'</td><td><button class="mini" data-ae="'+esc(a.name)+'">Edit</button> <button class="mini" data-ap="'+esc(a.name)+'">Play</button> <button class="danger" data-ad="'+esc(a.name)+'">Del</button></td>';tb.appendChild(tr);});tb.querySelectorAll('[data-ae]').forEach(b=>b.onclick=()=>editAnim(b.dataset.ae));tb.querySelectorAll('[data-ap]').forEach(b=>b.onclick=()=>playAnim(b.dataset.ap));tb.querySelectorAll('[data-ad]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete animation '+b.dataset.ad+'?'))return;await api('/api/animations/'+encodeURIComponent(b.dataset.ad),{method:'DELETE'});loadAnims();});}catch(e){$('alistErr').textContent=e.message;}}
+async function editAnim(name){try{const d=await api('/api/animations/'+encodeURIComponent(name));const a=d.animation;if(!a)return;$('atitle').textContent='Edit: '+a.name;$('aname').value=a.name;$('akind').value=a.kind||'ascii';$('afps').value=a.fps||3;$('aalias').value=a.aliases||'';const sep=(a.kind==='image')?'\n':'\n---FRAME---\n';$('aframes').value=(a.frames||[]).join(sep);$('afiles').value='';$('aok').textContent='';$('aerr').textContent='';}catch(e){$('aerr').textContent=e.message;}}
 async function playAnim(name){try{await post('/api/vtuber/play',{anim:name,hold_ms:8000});$('aok').textContent='Playing: '+name;}catch(e){$('aerr').textContent=e.message;}}
 $('arefresh').onclick=loadAnims;
-$('anew').onclick=()=>{$('atitle').textContent='Create / edit animation';$('aname').value='';$('afps').value='3';$('aalias').value='';$('aframes').value='';$('aok').textContent='';$('aerr').textContent='';};
-$('asave').onclick=async()=>{$('aok').textContent='';$('aerr').textContent='';try{const p={name:$('aname').value.trim(),fps:Number($('afps').value||3),aliases:$('aalias').value,frames_text:$('aframes').value};if(!p.name)throw new Error('Name required');await post('/api/animations',p);$('aok').textContent='Saved: '+p.name;loadAnims();}catch(e){$('aerr').textContent=e.message;}};
+$('anew').onclick=()=>{$('atitle').textContent='Create / edit animation';$('aname').value='';$('akind').value='ascii';$('afps').value='3';$('aalias').value='';$('aframes').value='';$('afiles').value='';$('aok').textContent='';$('aerr').textContent='';};
+function parseFramesText(kind, txt){if(!txt.trim())return []; if(kind==='image'){ return txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean); } if(txt.includes('---FRAME---')) return txt.split('---FRAME---').map(s=>s.replace(/^\r?\n|\r?\n$/g,'')).filter(s=>s.trim().length); return [txt.replace(/^\r?\n|\r?\n$/g,'')];}
+$('asave').onclick=async()=>{$('aok').textContent='';$('aerr').textContent='';try{const kind=$('akind').value||'ascii';const name=$('aname').value.trim();if(!name)throw new Error('Name required');const frames=parseFramesText(kind,$('aframes').value);if(!frames.length && !(kind==='image' && $('afiles').files.length)) throw new Error('Provide frames (or upload images).');const p={name,kind,fps:Number($('afps').value||3),aliases:$('aalias').value,frames};if(frames.length) await post('/api/animations',p); if(kind==='image' && $('afiles').files.length) await uploadAnimImages(name); $('aok').textContent='Saved: '+name;loadAnims();}catch(e){$('aerr').textContent=e.message;}};
+async function uploadAnimImages(name){const inp=$('afiles'); if(!inp.files || !inp.files.length) throw new Error('Select image files first.'); const fd=new FormData(); for(const f of inp.files) fd.append('files',f,f.name); const r=await fetch('/api/animations/'+encodeURIComponent(name)+'/upload',{method:'POST',body:fd}); let b=null; try{b=await r.json()}catch{} if(!r.ok) throw new Error((b&&b.detail)||('HTTP '+r.status)); return b;}
+$('aupload').onclick=async()=>{$('aok').textContent='';$('aerr').textContent='';try{const name=$('aname').value.trim(); if(!name) throw new Error('Name required'); await uploadAnimImages(name); $('aok').textContent='Images uploaded: '+name; $('afiles').value=''; loadAnims(); editAnim(name);}catch(e){$('aerr').textContent=e.message;}};
 $('aplay').onclick=()=>playAnim($('aname').value.trim()||'idle');
 poll(); setInterval(poll,3000);
 </script></body></html>"########;

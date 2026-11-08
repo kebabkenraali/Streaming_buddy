@@ -34,6 +34,7 @@ pub struct WikiEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Animation {
     pub name: String,
+    pub kind: String, // "ascii" or "image"
     pub frames: Vec<String>,
     pub fps: i64,
     pub aliases: String,
@@ -113,6 +114,7 @@ impl Db {
              );
              CREATE TABLE IF NOT EXISTS animations (
                name TEXT PRIMARY KEY,
+               kind TEXT NOT NULL DEFAULT 'ascii',
                frames TEXT NOT NULL,
                fps INTEGER NOT NULL DEFAULT 3,
                aliases TEXT NOT NULL DEFAULT '',
@@ -124,9 +126,42 @@ impl Db {
             conn: Mutex::new(conn),
             master,
         };
+        db.migrate()?;
         db.init_defaults()?;
         db.init_default_animations()?;
+        db.init_example_wiki_if_empty(cfg)?;
         Ok(db)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // animations.kind (added for image animation support)
+        let has_kind: bool = conn
+            .prepare("PRAGMA table_info(animations)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .flatten()
+            .any(|c| c == "kind");
+        if !has_kind {
+            let _ = conn.execute("ALTER TABLE animations ADD COLUMN kind TEXT NOT NULL DEFAULT 'ascii'", []);
+        }
+        Ok(())
+    }
+
+    fn init_example_wiki_if_empty(&self, cfg: &Config) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM wiki", [], |r| r.get(0))?;
+        drop(conn);
+        if count > 0 {
+            return Ok(());
+        }
+        let seed = cfg.root.join("seed").join("wiki-example.json");
+        if !seed.exists() {
+            return Ok(());
+        }
+        if let Ok(json) = std::fs::read_to_string(&seed) {
+            let _ = self.wiki_import_json(&json, false);
+        }
+        Ok(())
     }
 
     fn init_defaults(&self) -> Result<()> {
@@ -446,23 +481,24 @@ impl Db {
             return Ok(());
         }
         for a in default_animations() {
-            self.anim_upsert(&a.name, &a.frames, a.fps, &a.aliases)?;
+            self.anim_upsert(&a.name, &a.kind, &a.frames, a.fps, &a.aliases)?;
         }
         Ok(())
     }
 
     pub fn anim_list(&self) -> Result<Vec<Animation>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, frames, fps, aliases, updated_at FROM animations ORDER BY name")?;
+        let mut stmt = conn.prepare("SELECT name, kind, frames, fps, aliases, updated_at FROM animations ORDER BY name")?;
         let rows = stmt.query_map([], |r| {
-            let frames_s: String = r.get(1)?;
+            let frames_s: String = r.get(2)?;
             let frames: Vec<String> = serde_json::from_str(&frames_s).unwrap_or_default();
             Ok(Animation {
                 name: r.get(0)?,
+                kind: r.get(1)?,
                 frames,
-                fps: r.get(2)?,
-                aliases: r.get(3)?,
-                updated_at: r.get(4)?,
+                fps: r.get(3)?,
+                aliases: r.get(4)?,
+                updated_at: r.get(5)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().context("anim list")
@@ -473,17 +509,18 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT name, frames, fps, aliases, updated_at FROM animations WHERE lower(name)=lower(?)",
+                "SELECT name, kind, frames, fps, aliases, updated_at FROM animations WHERE lower(name)=lower(?)",
                 params![resolved],
                 |r| {
-                    let frames_s: String = r.get(1)?;
+                    let frames_s: String = r.get(2)?;
                     let frames: Vec<String> = serde_json::from_str(&frames_s).unwrap_or_default();
                     Ok(Animation {
                         name: r.get(0)?,
+                        kind: r.get(1)?,
                         frames,
-                        fps: r.get(2)?,
-                        aliases: r.get(3)?,
-                        updated_at: r.get(4)?,
+                        fps: r.get(3)?,
+                        aliases: r.get(4)?,
+                        updated_at: r.get(5)?,
                     })
                 },
             )
@@ -522,7 +559,7 @@ impl Db {
         Ok(key)
     }
 
-    pub fn anim_upsert(&self, name: &str, frames: &[String], fps: i64, aliases: &str) -> Result<()> {
+    pub fn anim_upsert(&self, name: &str, kind: &str, frames: &[String], fps: i64, aliases: &str) -> Result<()> {
         let name = name.trim().to_lowercase();
         if name.is_empty() {
             anyhow::bail!("animation name is required");
@@ -530,13 +567,14 @@ impl Db {
         if frames.is_empty() {
             anyhow::bail!("at least one frame is required");
         }
+        let kind = if kind.trim().eq_ignore_ascii_case("image") { "image" } else { "ascii" };
         let frames_s = serde_json::to_string(frames)?;
         let fps = fps.clamp(1, 30);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO animations (name, frames, fps, aliases, updated_at) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(name) DO UPDATE SET frames=excluded.frames, fps=excluded.fps, aliases=excluded.aliases, updated_at=excluded.updated_at",
-            params![name, frames_s, fps, aliases.trim(), now_ts()],
+            "INSERT INTO animations (name, kind, frames, fps, aliases, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, frames=excluded.frames, fps=excluded.fps, aliases=excluded.aliases, updated_at=excluded.updated_at",
+            params![name, kind, frames_s, fps, aliases.trim(), now_ts()],
         )?;
         Ok(())
     }
@@ -578,35 +616,35 @@ fn default_animations() -> Vec<Animation> {
     let frame_x = |h: &[&str], b: &[&str], x: &str| -> String { let mut v = h.to_vec(); v.extend_from_slice(b); v.push(x); f(&v) };
 
     vec![
-        Animation { name: "idle".into(), fps: 3, aliases: "default".into(), updated_at: 0.0,
+        Animation { name: "idle".into(), kind: "ascii".into(), fps: 3, aliases: "default".into(), updated_at: 0.0,
             frames: vec![frame(&head_open,&body_idle), frame(&head_open,&body_idle), frame(&head_blink,&body_idle), frame(&head_open,&body_idle)] },
-        Animation { name: "blink".into(), fps: 4, aliases: "".into(), updated_at: 0.0,
+        Animation { name: "blink".into(), kind: "ascii".into(), fps: 4, aliases: "".into(), updated_at: 0.0,
             frames: vec![frame(&head_open,&body_idle), frame(&head_blink,&body_idle), frame(&head_open,&body_idle)] },
-        Animation { name: "talk".into(), fps: 4, aliases: "speak,speaking".into(), updated_at: 0.0,
+        Animation { name: "talk".into(), kind: "ascii".into(), fps: 4, aliases: "speak,speaking".into(), updated_at: 0.0,
             frames: vec![frame(&head_talk_a,&body_idle), frame(&head_talk_b,&body_wave_r), frame(&head_open,&body_idle), frame(&head_talk_a,&body_idle)] },
-        Animation { name: "happy".into(), fps: 3, aliases: "smile,joy".into(), updated_at: 0.0,
+        Animation { name: "happy".into(), kind: "ascii".into(), fps: 3, aliases: "smile,joy".into(), updated_at: 0.0,
             frames: vec![frame(&head_happy,&body_idle), frame(&head_happy,&body_arms_up), frame(&head_happy,&body_idle)] },
-        Animation { name: "celebrate".into(), fps: 4, aliases: "laugh,party".into(), updated_at: 0.0,
+        Animation { name: "celebrate".into(), kind: "ascii".into(), fps: 4, aliases: "laugh,party".into(), updated_at: 0.0,
             frames: vec![frame_x(&head_happy,&body_arms_up,"  * confetti! *"), frame_x(&head_happy,&body_arms_up," *  confetti!  *"), frame_x(&head_happy,&body_arms_up,"  * confetti! *")] },
-        Animation { name: "sad".into(), fps: 2, aliases: "".into(), updated_at: 0.0,
+        Animation { name: "sad".into(), kind: "ascii".into(), fps: 2, aliases: "".into(), updated_at: 0.0,
             frames: vec![frame(&head_sad,&body_down), frame(&head_sad,&body_idle)] },
-        Animation { name: "surprised".into(), fps: 3, aliases: "shock,wow".into(), updated_at: 0.0,
+        Animation { name: "surprised".into(), kind: "ascii".into(), fps: 3, aliases: "shock,wow".into(), updated_at: 0.0,
             frames: vec![frame_x(&head_surprised,&body_arms_up,"        ! ! !"), frame(&head_surprised,&body_idle)] },
-        Animation { name: "angry".into(), fps: 3, aliases: "mad".into(), updated_at: 0.0,
+        Animation { name: "angry".into(), kind: "ascii".into(), fps: 3, aliases: "mad".into(), updated_at: 0.0,
             frames: vec![frame(&head_angry,&body_down), frame_x(&head_angry,&body_idle,"      (grumble)")] },
-        Animation { name: "wink".into(), fps: 3, aliases: "flirt".into(), updated_at: 0.0,
+        Animation { name: "wink".into(), kind: "ascii".into(), fps: 3, aliases: "flirt".into(), updated_at: 0.0,
             frames: vec![frame(&head_wink_l,&body_idle), frame(&head_open,&body_idle), frame(&head_wink_r,&body_idle), frame(&head_open,&body_idle)] },
-        Animation { name: "sleep".into(), fps: 1, aliases: "tired,yawn".into(), updated_at: 0.0,
+        Animation { name: "sleep".into(), kind: "ascii".into(), fps: 1, aliases: "tired,yawn".into(), updated_at: 0.0,
             frames: vec![frame(&head_sleep,&body_down), frame(&head_sleep,&body_down)] },
-        Animation { name: "dance".into(), fps: 4, aliases: "".into(), updated_at: 0.0,
+        Animation { name: "dance".into(), kind: "ascii".into(), fps: 4, aliases: "".into(), updated_at: 0.0,
             frames: vec![frame(&head_happy,&body_dance_l), frame(&head_open,&body_dance_r), frame(&head_happy,&body_dance_l), frame(&head_open,&body_dance_r)] },
-        Animation { name: "wave".into(), fps: 3, aliases: "hello,hi,bye".into(), updated_at: 0.0,
+        Animation { name: "wave".into(), kind: "ascii".into(), fps: 3, aliases: "hello,hi,bye".into(), updated_at: 0.0,
             frames: vec![frame(&head_open,&body_idle), frame(&head_happy,&body_wave_r), frame(&head_open,&body_idle), frame(&head_happy,&body_wave_l)] },
-        Animation { name: "think".into(), fps: 2, aliases: "confused,question".into(), updated_at: 0.0,
+        Animation { name: "think".into(), kind: "ascii".into(), fps: 2, aliases: "confused,question".into(), updated_at: 0.0,
             frames: vec![frame(&head_think,&body_think), frame(&head_think,&body_think), frame(&head_open,&body_idle)] },
-        Animation { name: "nod".into(), fps: 3, aliases: "".into(), updated_at: 0.0,
+        Animation { name: "nod".into(), kind: "ascii".into(), fps: 3, aliases: "".into(), updated_at: 0.0,
             frames: vec![frame(&head_open,&body_idle), frame(&head_blink,&body_idle), frame(&head_open,&body_idle)] },
-        Animation { name: "shrug".into(), fps: 2, aliases: "".into(), updated_at: 0.0,
+        Animation { name: "shrug".into(), kind: "ascii".into(), fps: 2, aliases: "".into(), updated_at: 0.0,
             frames: vec![frame(&head_open,&body_idle), frame(&head_open,&body_shrug), frame(&head_happy,&body_shrug), frame(&head_open,&body_idle)] },
     ]
 }

@@ -18,8 +18,10 @@ Streaming Buddy is a local co-host app for livestreams: it keeps a channel-speci
   - Manual commands: `!wikievent <title> | <content>` and `!addfact <text>`.
 - **Twitch integration**: connect/start/stop/status, reply modes/cooldown (configurable). Start without credentials returns a clear error.
 - **VTuber in a separate window (OBS capture)**: `/vtuber` opens as its own popup window (independent capture). Press **`G`** to toggle green background for chroma.
-- **ASCII animations (VTuber)**: 15 default animations — `idle, blink, talk, happy, celebrate, sad, surprised, angry, wink, sleep, dance, wave, think, nod, shrug` (+ aliases like `smile/joy`, `speak`, `hello/hi/bye`, `shock/wow`, `flirt`, etc.). Animations are stored in the local DB and served to `/vtuber`.
-- **Create/edit animations in the app**: GUI **Animations** tab + API to list/get/create/update/delete animations and control VTuber play state. Frame format supports multiple frames separated by a line containing `---FRAME---`.
+- **VTuber animations (ASCII + image)**: 15 default ASCII animations — `idle, blink, talk, happy, celebrate, sad, surprised, angry, wink, sleep, dance, wave, think, nod, shrug` (+ aliases like `smile/joy`, `speak`, `hello/hi/bye`, `shock/wow`, `flirt`, etc.). Animations are stored in the local DB and rendered by `/vtuber`.
+  - **ASCII**: frames separated by a line containing `---FRAME---`.
+  - **Image**: upload image frames (PNG/JPG/GIF/WEBP) in the Animations tab or via API; frames are saved under `data/images/animations/<name>/` (gitignored) and served at `/media/...`.
+- **Create/edit animations in the app**: GUI **Animations** tab + API to list/get/create/update/delete animations, upload image frames, and control VTuber play state (`/api/vtuber/play`, `/api/vtuber/state`).
 
 ## Download / run (Windows EXE)
 
@@ -68,15 +70,16 @@ streaming-buddy-rs ask "<text>"
 
 - `GET/POST /api/chat`, `GET /api/messages`
 - `GET/POST /api/wiki`, `GET/PUT/DELETE /api/wiki/:id`, `GET /api/wiki/search?q=...`
-- `GET/POST /api/animations`, `GET/PUT/DELETE /api/animations/:name`
+- `GET/POST /api/animations`, `GET/PUT/DELETE /api/animations/:name`, `POST /api/animations/:name/upload` (multipart image frames)
 - `GET /api/vtuber/state`, `POST /api/vtuber/play`
 - `GET/POST /api/settings` (secrets masked)
 - `POST /api/backup/create`, `GET /api/backup/list`, `POST /api/backup/restore`
 - `POST /api/twitch/start|stop`, `GET /api/twitch/status`
+- `GET /media/...` (local images under `data/images/`, gitignored)
 
 ## Example data (safe)
 
-[`seed/wiki-example.json`](seed/wiki-example.json) contains **two example entries per category** (`persona`, `platform`, `game`, `fact`, `event`) — fictional/no personal data. Use as import/reference examples.
+[`seed/wiki-example.json`](seed/wiki-example.json) contains **two example entries per category** (`persona`, `platform`, `game`, `fact`, `event`) — **10 entries total**, fictional/no personal data. On a fresh install (empty wiki DB) the app auto-imports this seed if present; you can also use it as a backup/import reference.
 
 ## Security & privacy
 
